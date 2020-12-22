@@ -1,0 +1,516 @@
+
+$formProxyaddressChanger_Load={
+	#TODO: Initialize Form Controls here
+	
+}
+
+#region Control Helper Functions
+function Update-ListBox
+{
+<#
+	.SYNOPSIS
+		This functions helps you load items into a ListBox or CheckedListBox.
+	
+	.DESCRIPTION
+		Use this function to dynamically load items into the ListBox control.
+	
+	.PARAMETER ListBox
+		The ListBox control you want to add items to.
+	
+	.PARAMETER Items
+		The object or objects you wish to load into the ListBox's Items collection.
+	
+	.PARAMETER DisplayMember
+		Indicates the property to display for the items in this control.
+	
+	.PARAMETER Append
+		Adds the item(s) to the ListBox without clearing the Items collection.
+	
+	.EXAMPLE
+		Update-ListBox $ListBox1 "Red", "White", "Blue"
+	
+	.EXAMPLE
+		Update-ListBox $listBox1 "Red" -Append
+		Update-ListBox $listBox1 "White" -Append
+		Update-ListBox $listBox1 "Blue" -Append
+	
+	.EXAMPLE
+		Update-ListBox $listBox1 (Get-Process) "ProcessName"
+	
+	.NOTES
+		Additional information about the function.
+#>
+	
+	param
+	(
+		[Parameter(Mandatory = $true)]
+		[ValidateNotNull()]
+		[System.Windows.Forms.ListBox]
+		$ListBox,
+		[Parameter(Mandatory = $true)]
+		[ValidateNotNull()]
+		$Items,
+		[Parameter(Mandatory = $false)]
+		[string]
+		$DisplayMember,
+		[switch]
+		$Append
+	)
+	
+	if (-not $Append)
+	{
+		$listBox.Items.Clear()
+	}
+	
+	if ($Items -is [System.Windows.Forms.ListBox+ObjectCollection])
+	{
+		$listBox.Items.AddRange($Items)
+	}
+	elseif ($Items -is [Array])
+	{
+		$listBox.BeginUpdate()
+		foreach ($obj in $Items)
+		{
+			$listBox.Items.Add($obj)
+		}
+		$listBox.EndUpdate()
+	}
+	else
+	{
+		$listBox.Items.Add($Items)
+	}
+	
+	$listBox.DisplayMember = $DisplayMember
+}
+
+function Update-DataGridView
+{
+	<#
+	.SYNOPSIS
+		This functions helps you load items into a DataGridView.
+
+	.DESCRIPTION
+		Use this function to dynamically load items into the DataGridView control.
+
+	.PARAMETER  DataGridView
+		The DataGridView control you want to add items to.
+
+	.PARAMETER  Item
+		The object or objects you wish to load into the DataGridView's items collection.
+	
+	.PARAMETER  DataMember
+		Sets the name of the list or table in the data source for which the DataGridView is displaying data.
+
+	.PARAMETER AutoSizeColumns
+	    Resizes DataGridView control's columns after loading the items.
+	#>
+	Param (
+		[ValidateNotNull()]
+		[Parameter(Mandatory=$true)]
+		[System.Windows.Forms.DataGridView]$DataGridView,
+		[ValidateNotNull()]
+		[Parameter(Mandatory=$true)]
+		$Item,
+	    [Parameter(Mandatory=$false)]
+		[string]$DataMember,
+		[System.Windows.Forms.DataGridViewAutoSizeColumnsMode]$AutoSizeColumns = 'None'
+	)
+	$DataGridView.SuspendLayout()
+	$DataGridView.DataMember = $DataMember
+	
+	if ($null -eq $Item)
+	{
+		$DataGridView.DataSource = $null
+	}
+	elseif ($Item -is [System.Data.DataSet] -and $Item.Tables.Count -gt 0)
+	{
+		$DataGridView.DataSource = $Item.Tables[0]
+	}
+	elseif ($Item -is [System.ComponentModel.IListSource]`
+	-or $Item -is [System.ComponentModel.IBindingList] -or $Item -is [System.ComponentModel.IBindingListView] )
+	{
+		$DataGridView.DataSource = $Item
+	}
+	else
+	{
+		$array = New-Object System.Collections.ArrayList
+		
+		if ($Item -is [System.Collections.IList])
+		{
+			$array.AddRange($Item)
+		}
+		else
+		{
+			$array.Add($Item)
+		}
+		$DataGridView.DataSource = $array
+	}
+	
+	if ($AutoSizeColumns -ne 'None')
+	{
+		$DataGridView.AutoResizeColumns($AutoSizeColumns)
+	}
+	
+	$DataGridView.ResumeLayout()
+}
+
+function ConvertTo-DataTable
+{
+	<#
+		.SYNOPSIS
+			Converts objects into a DataTable.
+	
+		.DESCRIPTION
+			Converts objects into a DataTable, which are used for DataBinding.
+	
+		.PARAMETER  InputObject
+			The input to convert into a DataTable.
+	
+		.PARAMETER  Table
+			The DataTable you wish to load the input into.
+	
+		.PARAMETER RetainColumns
+			This switch tells the function to keep the DataTable's existing columns.
+		
+		.PARAMETER FilterWMIProperties
+			This switch removes WMI properties that start with an underline.
+	
+		.EXAMPLE
+			$DataTable = ConvertTo-DataTable -InputObject (Get-Process)
+	#>
+	[OutputType([System.Data.DataTable])]
+	param(
+	$InputObject, 
+	[ValidateNotNull()]
+	[System.Data.DataTable]$Table,
+	[switch]$RetainColumns,
+	[switch]$FilterWMIProperties)
+	
+	if($null -eq $Table)
+	{
+		$Table = New-Object System.Data.DataTable
+	}
+	
+	if ($null -eq $InputObject)
+	{
+		$Table.Clear()
+		return @( ,$Table)
+	}
+	
+	if ($InputObject -is [System.Data.DataTable])
+	{
+		$Table = $InputObject
+	}
+	elseif ($InputObject -is [System.Data.DataSet] -and $InputObject.Tables.Count -gt 0)
+	{
+		$Table = $InputObject.Tables[0]
+	}
+	else
+	{
+		if (-not $RetainColumns -or $Table.Columns.Count -eq 0)
+		{
+			#Clear out the Table Contents
+			$Table.Clear()
+			
+			if ($null -eq $InputObject) { return } #Empty Data
+			
+			$object = $null
+			#find the first non null value
+			foreach ($item in $InputObject)
+			{
+				if ($null -ne $item)
+				{
+					$object = $item
+					break
+				}
+			}
+			
+			if ($null -eq $object) { return } #All null then empty
+			
+			#Get all the properties in order to create the columns
+			foreach ($prop in $object.PSObject.Get_Properties())
+			{
+				if (-not $FilterWMIProperties -or -not $prop.Name.StartsWith('__')) #filter out WMI properties
+				{
+					#Get the type from the Definition string
+					$type = $null
+					
+					if ($null -ne $prop.Value)
+					{
+						try { $type = $prop.Value.GetType() }
+						catch { Out-Null }
+					}
+					
+					if ($null -ne $type) # -and [System.Type]::GetTypeCode($type) -ne 'Object')
+					{
+						[void]$table.Columns.Add($prop.Name, $type)
+					}
+					else #Type info not found
+					{
+						[void]$table.Columns.Add($prop.Name)
+					}
+				}
+			}
+			
+			if ($object -is [System.Data.DataRow])
+			{
+				foreach ($item in $InputObject)
+				{
+					$Table.Rows.Add($item)
+				}
+				return @( ,$Table)
+			}
+		}
+		else
+		{
+			$Table.Rows.Clear()
+		}
+		
+		foreach ($item in $InputObject)
+		{
+			$row = $table.NewRow()
+			
+			if ($item)
+			{
+				foreach ($prop in $item.PSObject.Get_Properties())
+				{
+					if ($table.Columns.Contains($prop.Name))
+					{
+						$row.Item($prop.Name) = $prop.Value
+					}
+				}
+			}
+			[void]$table.Rows.Add($row)
+		}
+	}
+	
+	return @(,$Table)
+}
+
+function Update-ComboBox
+{
+<#
+	.SYNOPSIS
+		This functions helps you load items into a ComboBox.
+	
+	.DESCRIPTION
+		Use this function to dynamically load items into the ComboBox control.
+	
+	.PARAMETER ComboBox
+		The ComboBox control you want to add items to.
+	
+	.PARAMETER Items
+		The object or objects you wish to load into the ComboBox's Items collection.
+	
+	.PARAMETER DisplayMember
+		Indicates the property to display for the items in this control.
+		
+	.PARAMETER ValueMember
+		Indicates the property to use for the value of the control.
+	
+	.PARAMETER Append
+		Adds the item(s) to the ComboBox without clearing the Items collection.
+	
+	.EXAMPLE
+		Update-ComboBox $combobox1 "Red", "White", "Blue"
+	
+	.EXAMPLE
+		Update-ComboBox $combobox1 "Red" -Append
+		Update-ComboBox $combobox1 "White" -Append
+		Update-ComboBox $combobox1 "Blue" -Append
+	
+	.EXAMPLE
+		Update-ComboBox $combobox1 (Get-Process) "ProcessName"
+	
+	.NOTES
+		Additional information about the function.
+#>
+	
+	param
+	(
+		[Parameter(Mandatory = $true)]
+		[ValidateNotNull()]
+		[System.Windows.Forms.ComboBox]
+		$ComboBox,
+		[Parameter(Mandatory = $true)]
+		[ValidateNotNull()]
+		$Items,
+		[Parameter(Mandatory = $false)]
+		[string]$DisplayMember,
+		[Parameter(Mandatory = $false)]
+		[string]$ValueMember,
+		[switch]
+		$Append
+	)
+	
+	if (-not $Append)
+	{
+		$ComboBox.Items.Clear()
+	}
+	
+	if ($Items -is [Object[]])
+	{
+		$ComboBox.Items.AddRange($Items)
+	}
+	elseif ($Items -is [System.Collections.IEnumerable])
+	{
+		$ComboBox.BeginUpdate()
+		foreach ($obj in $Items)
+		{
+			$ComboBox.Items.Add($obj)
+		}
+		$ComboBox.EndUpdate()
+	}
+	else
+	{
+		$ComboBox.Items.Add($Items)
+	}
+	
+	$ComboBox.DisplayMember = $DisplayMember
+	$ComboBox.ValueMember = $ValueMember
+}
+#endregion
+# Connect AD function
+$buttonConnectAD_Click={
+	Import-Module ActiveDirectory
+	$buttonConnectAD.Enabled = $false
+	$buttonFetchUser.Enabled = $true
+}
+
+# Fetch users from Active Directory and populate Select-Box
+$buttonFetchUser_Click={
+	$allusers = Get-ADUser -Filter *
+	$allusers | Sort-Object -Property Name | ForEach-Object { [void]$allusersbox.Items.Add($_.Name) }
+	$allusersbox.Enabled = $true
+	$userprxyaddresses.Enabled = $true
+	$tb_domain.Enabled = $true
+	$tb_firstname.Enabled = $true
+	$tb_lastname.Enabled = $true
+	$tb_new.Enabled = $true
+	$btn_add.Enabled = $true
+	$btn_add_base.Enabled = $true
+	$btn_remove.Enabled = $true
+}
+
+#  Select-Box choose routine
+$allusersbox_SelectedIndexChanged = {
+	# Clear Listboxes and Variables
+	$userprxyaddresses.Items.clear()
+	$notsmtplist.Items.clear()
+	$selecteduser2 = ""
+	$selectedusermails = ""
+	# Get Selected User and fetch Proxyaddreses 
+	$selecteduser = $allusersbox.SelectedItem.ToString()
+	Write-Host "Benutzer - $selecteduser - selektiert"
+	$selecteduser2 = Get-ADUser -filter { name -like $selecteduser } -Properties *
+	$selectedusermails = $selecteduser2.proxyAddresses
+	$tb_firstname.Text = $selecteduser2.GivenName
+	$tb_lastname.Text = $selecteduser2.Surname
+	
+	# Generate Array for Garbage-Addresses
+	$selectedusermailskip_array = New-Object System.Collections.ArrayList
+	
+	#Main loop for building list
+	foreach ($mail in $selectedusermails)
+	{
+		Write-Host ("$mail")
+		$mailarr = $mail.split(":")
+		$mailpre = $mailarr[0]
+		$mailpost = $mailarr[1]
+		
+		if ($mailpre -ne "smtp")
+		{
+			Write-Host "not smtp. skip."
+			$selectedusermailskip_array.Add("$mail")
+		}
+		else
+		{
+			if ($mailpre -ceq "SMTP")
+			{
+				$userprxyaddresses.Items.Add("$mailpost", $true)
+			}
+			else
+			{
+				$userprxyaddresses.Items.Add("$mailpost")
+			}
+		}
+	}
+	$notsmtplist.Items.AddRange($selectedusermailskip_array)
+}
+
+
+$buttonCommitChanges_Click = {
+	#proxy email address
+	$peas = $userprxyaddresses.Items
+	$peasc = $userprxyaddresses.Items.Count
+	#Proxy email address _primary_ check. Must be only 1
+	$peapc = $userprxyaddresses.CheckedItems.Count
+	if ($peapc -gt 1)
+	{
+		Write-Error "More than one primary...."
+	}
+	else
+	{
+		$peap = $userprxyaddresses.CheckedItems
+		$peasval = New-Object System.Collections.ArrayList
+		
+		foreach ($peasf in $peas)
+		{
+			if ($peap -eq $peasf)
+			{
+				$peasval.Add("SMTP:" + $peasf)
+			}
+			else
+			{
+				$peasval.Add("smtp:" + $peasf)
+			}
+			
+		}
+		$peasval.AddRange($notsmtplist.Items)
+		Write-Host "
+			#######################
+			New Set:
+			$peasval
+			#######################"
+		
+		$selecteduser = $allusersbox.SelectedItem.ToString()
+		Write-Host "Benutzer - $selecteduser - selektiert"
+		# Build String for adding Addresses
+		$peasval_encoded = ""
+		foreach ($peasmail in $peasval)
+		{
+			$peasval_encoded = $peasval_encoded + $peasmail + ", "
+		}
+		# Cut last character (,)
+		$peasval_encoded = $peasval_encoded.Substring(0, $peasval_encoded.Length - 1)
+		
+		# Magic goes here
+		
+		Get-ADUser -filter { name -like $selecteduser } | Set-ADUser -replace @{proxyAddresses=@($peasval)}
+	}
+	
+	
+	
+}
+
+$btn_add_Click={
+	#TODO: Place custom script here
+	$manproxadd = $tb_new.Text
+	$userprxyaddresses.Items.Add($manproxadd)
+	$tb_new.Clear
+}
+
+$btn_remove_Click={
+	#TODO: Place custom script here
+	$tb_new.Text = $userprxyaddresses.SelectedItem
+	$userprxyaddresses.Items.Remove($userprxyaddresses.SelectedItem)
+	
+}
+
+$btn_add_base_Click={
+	#TODO: Place custom script here
+	$userprxyaddresses.Items.Add($tb_firstname.Text.Substring(0, 1)+"."+$tb_lastname.Text+"@"+$tb_domain.Text, $true)
+	$userprxyaddresses.Items.Add($tb_firstname.Text+"."+$tb_lastname.Text+"@"+$tb_domain.Text)
+	$userprxyaddresses.Items.Add($tb_firstname.Text+"."+$tb_lastname.Text+"@"+$tb_msDomain1.Text)
+	$userprxyaddresses.Items.Add($tb_firstname.Text+"."+$tb_lastname.Text+"@"+$tb_msDomain2.Text)
+}
